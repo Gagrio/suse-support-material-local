@@ -32,6 +32,10 @@ struct Args {
     #[arg(short = 'c', long, default_value = "compressed", value_parser = ["compressed", "uncompressed", "both"])]
     compression: String,
 
+    /// Collect secrets (disabled by default for security)
+    #[arg(short = 's', long, default_value = "false")]
+    collect_secrets: bool,
+
     /// Verbose logging
     #[arg(short, long)]
     verbose: bool,
@@ -89,10 +93,19 @@ async fn main() -> Result<()> {
         configmaps.len()
     );
 
-    // Collect Secrets from verified namespaces
-    info!("Starting secret collection...");
-    let secrets = kube_client.collect_secrets(&verified_namespaces).await?;
-    info!("Successfully collected {} secrets total", secrets.len());
+    // Collect Secrets from verified namespaces (only if --collect-secrets flag is set)
+    let secrets = if args.collect_secrets {
+        info!("Starting secret collection...");
+        let collected_secrets = kube_client.collect_secrets(&verified_namespaces).await?;
+        info!(
+            "Successfully collected {} secrets total",
+            collected_secrets.len()
+        );
+        collected_secrets
+    } else {
+        info!("Secret collection disabled (use --collect-secrets to enable)");
+        Vec::new()
+    };
 
     // Create output manager and save files
     info!("Setting up file output...");
@@ -204,12 +217,16 @@ async fn main() -> Result<()> {
             &args.format,
         )?;
 
-        let secrets_saved = output_manager.save_secrets_individually(
-            &output_dir,
-            namespace,
-            &namespace_secret_values,
-            &args.format,
-        )?;
+        let secrets_saved = if args.collect_secrets {
+            output_manager.save_secrets_individually(
+                &output_dir,
+                namespace,
+                &namespace_secret_values,
+                &args.format,
+            )?
+        } else {
+            0
+        };
 
         namespace_stats.push((
             namespace.clone(),
@@ -222,7 +239,7 @@ async fn main() -> Result<()> {
     }
 
     // Create enhanced summary
-    output_manager.create_enhanced_summary(&output_dir, &namespace_stats)?;
+    output_manager.create_enhanced_summary(&output_dir, &namespace_stats, args.collect_secrets)?;
 
     // Handle compression based on user preference
     if let Some(archive_path) = output_manager.handle_compression(&output_dir, &args.compression)? {
