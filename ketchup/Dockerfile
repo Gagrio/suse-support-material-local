@@ -25,7 +25,7 @@ RUN cargo build --release
 FROM registry.suse.com/bci/bci-micro:latest
 
 # Copy CA certificates for HTTPS connections to Kubernetes API
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /etc/ssl/certs /etc/ssl/certs
 
 # Copy the binary from builder
 COPY --from=builder /build/target/release/ketchup /usr/local/bin/ketchup
@@ -35,6 +35,3 @@ RUN mkdir -p /tmp && chmod 1777 /tmp
 
 # Set entrypoint
 ENTRYPOINT ["/usr/local/bin/ketchup"]
-
-# Default command (show help)
-CMD ["--help"]
