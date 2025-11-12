@@ -2,11 +2,11 @@ name: Build and Push Ketchup Docker Image
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
     paths:
       - 'ketchup/**'  # Only trigger on changes to files in ketchup directory
   pull_request:
-    branches: [ main ]
+    branches: [ master ]
     paths:
       - 'ketchup/**'
   workflow_dispatch:  # Allows manual triggering
