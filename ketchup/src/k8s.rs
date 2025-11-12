@@ -1,12 +1,28 @@
 use anyhow::{Context, Result};
-use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Pod, Secret, Service};
-use kube::{Api, Client, Config};
+use k8s_openapi::api::core::v1::Namespace;
+use kube::{
+    api::{Api, DynamicObject, ListParams},
+    discovery::{self, Scope},
+    Client, Config, ResourceExt,
+};
 use serde_json::Value;
+use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
 pub struct KubeClient {
     client: Client,
+}
+
+#[derive(Debug, Clone)]
+pub struct CollectionOptions {
+    pub include_secrets: bool,
+    pub include_custom_resources: bool,
+    pub include_events: bool,
+    pub include_replicasets: bool,
+    pub include_endpoints: bool,
+    pub include_leases: bool,
+    pub specific_crds: Option<Vec<String>>,
+    pub sanitize: bool,
 }
 
 impl KubeClient {
@@ -14,16 +30,14 @@ impl KubeClient {
     pub async fn new_client(kubeconfig_path: &str) -> Result<Self> {
         info!("Loading kubeconfig from: {}", kubeconfig_path);
 
-        // Set the KUBECONFIG environment variable (safe in our single-threaded context)
-        unsafe {
-            std::env::set_var("KUBECONFIG", kubeconfig_path);
-        }
+        // Set the KUBECONFIG environment variable
+        std::env::set_var("KUBECONFIG", kubeconfig_path);
 
         let config = Config::infer().await.context("Failed to load kubeconfig")?;
 
         let client = Client::try_from(config).context("Failed to create Kubernetes client")?;
 
-        info!("Successfully connected to Kubernetes cluster");
+        info!("✅ Successfully connected to Kubernetes cluster");
         Ok(KubeClient { client })
     }
 
@@ -43,7 +57,8 @@ impl KubeClient {
             .filter_map(|ns| ns.metadata.name.clone())
             .collect();
 
-        info!("Found {} namespaces: {:?}", names.len(), names);
+        info!("Found {} namespaces", names.len());
+        debug!("Namespaces: {:?}", names);
         Ok(names)
     }
 
@@ -56,7 +71,7 @@ impl KubeClient {
             if available.contains(ns) {
                 verified.push(ns.clone());
             } else {
-                warn!("Namespace '{}' does not exist, skipping", ns);
+                warn!("⚠️  Namespace '{}' does not exist, skipping", ns);
             }
         }
 
@@ -67,159 +82,182 @@ impl KubeClient {
         Ok(verified)
     }
 
-    /// Collect pods from specified namespaces
-    pub async fn collect_pods(&self, namespaces: &[String]) -> Result<Vec<Value>> {
-        let mut all_pods = Vec::new();
+    /// Collect cluster-scoped resources
+    pub async fn collect_cluster_resources(
+        &self,
+        opts: &CollectionOptions,
+    ) -> Result<HashMap<String, Vec<Value>>> {
+        let mut resources: HashMap<String, Vec<Value>> = HashMap::new();
 
-        for namespace in namespaces {
-            info!("Collecting pods from namespace: {}", namespace);
-            let pods: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
+        // Discover all API resources
+        let discovery = discovery::Discovery::new(self.client.clone()).run().await?;
 
-            match pods.list(&Default::default()).await {
-                Ok(pod_list) => {
-                    let pod_count = pod_list.items.len();
-                    for pod in pod_list.items {
-                        if let Ok(json) = serde_json::to_value(&pod) {
-                            all_pods.push(json);
-                        }
-                    }
-                    info!("Found {} pods in namespace {}", pod_count, namespace);
+        // Filter for cluster-scoped resources
+        for group in discovery.groups() {
+            for (ar, caps) in group.recommended_resources() {
+                // Skip if not cluster-scoped
+                if caps.scope != Scope::Cluster {
+                    continue;
                 }
-                Err(e) => {
-                    warn!("Failed to collect pods from namespace {}: {}", namespace, e);
+
+                // Apply filters
+                if !self.should_collect_resource(&ar.kind, opts) {
+                    debug!("Skipping cluster resource: {}", ar.kind);
+                    continue;
+                }
+
+                debug!("Collecting cluster resource: {}", ar.kind);
+
+                match self.collect_dynamic_resource(&ar, None, opts).await {
+                    Ok(items) if !items.is_empty() => {
+                        info!("  ✅ {} ({})", ar.kind, items.len());
+                        resources.insert(ar.kind.clone(), items);
+                    }
+                    Ok(_) => {
+                        debug!("  ⏭️  {} (0 items)", ar.kind);
+                    }
+                    Err(e) => {
+                        warn!("  ⚠️  Failed to collect {}: {}", ar.kind, e);
+                    }
                 }
             }
         }
 
-        Ok(all_pods)
+        Ok(resources)
     }
 
-    /// Collect services from specified namespaces
-    pub async fn collect_services(&self, namespaces: &[String]) -> Result<Vec<Value>> {
-        let mut all_services = Vec::new();
+    /// Collect namespaced resources
+    pub async fn collect_namespace_resources(
+        &self,
+        namespace: &str,
+        opts: &CollectionOptions,
+    ) -> Result<HashMap<String, Vec<Value>>> {
+        let mut resources: HashMap<String, Vec<Value>> = HashMap::new();
 
-        for namespace in namespaces {
-            info!("Collecting services from namespace: {}", namespace);
-            let services: Api<Service> = Api::namespaced(self.client.clone(), namespace);
+        // Discover all API resources
+        let discovery = discovery::Discovery::new(self.client.clone()).run().await?;
 
-            match services.list(&Default::default()).await {
-                Ok(service_list) => {
-                    let service_count = service_list.items.len();
-                    for service in service_list.items {
-                        if let Ok(json) = serde_json::to_value(&service) {
-                            all_services.push(json);
-                        }
-                    }
-                    info!(
-                        "Found {} services in namespace {}",
-                        service_count, namespace
-                    );
+        // Filter for namespaced resources
+        for group in discovery.groups() {
+            for (ar, caps) in group.recommended_resources() {
+                // Skip if not namespaced
+                if caps.scope != Scope::Namespaced {
+                    continue;
                 }
-                Err(e) => {
-                    warn!(
-                        "Failed to collect services from namespace {}: {}",
-                        namespace, e
-                    );
+
+                // Apply filters
+                if !self.should_collect_resource(&ar.kind, opts) {
+                    debug!("Skipping namespaced resource: {}", ar.kind);
+                    continue;
+                }
+
+                debug!("Collecting {} from namespace {}", ar.kind, namespace);
+
+                match self
+                    .collect_dynamic_resource(&ar, Some(namespace), opts)
+                    .await
+                {
+                    Ok(items) if !items.is_empty() => {
+                        debug!("  ✅ {} ({})", ar.kind, items.len());
+                        resources.insert(ar.kind.clone(), items);
+                    }
+                    Ok(_) => {
+                        debug!("  ⏭️  {} (0 items)", ar.kind);
+                    }
+                    Err(e) => {
+                        debug!("  ⚠️  Failed to collect {}: {}", ar.kind, e);
+                    }
                 }
             }
         }
 
-        Ok(all_services)
+        Ok(resources)
     }
 
-    /// Collect deployments from specified namespaces
-    pub async fn collect_deployments(&self, namespaces: &[String]) -> Result<Vec<Value>> {
-        let mut all_deployments = Vec::new();
+    /// Collect a dynamic resource type
+    async fn collect_dynamic_resource(
+        &self,
+        ar: &kube::discovery::ApiResource,
+        namespace: Option<&str>,
+        opts: &CollectionOptions,
+    ) -> Result<Vec<Value>> {
+        let api: Api<DynamicObject> = if let Some(ns) = namespace {
+            Api::namespaced_with(self.client.clone(), ns, &ar.api_version, &ar.kind)
+        } else {
+            Api::all_with(self.client.clone(), &ar.api_version, &ar.kind)
+        };
 
-        for namespace in namespaces {
-            info!("Collecting deployments from namespace: {}", namespace);
-            let deployments: Api<Deployment> = Api::namespaced(self.client.clone(), namespace);
+        let list = api.list(&ListParams::default()).await?;
 
-            match deployments.list(&Default::default()).await {
-                Ok(deployment_list) => {
-                    let deployment_count = deployment_list.items.len();
-                    for deployment in deployment_list.items {
-                        if let Ok(json) = serde_json::to_value(&deployment) {
-                            all_deployments.push(json);
-                        }
-                    }
-                    info!(
-                        "Found {} deployments in namespace {}",
-                        deployment_count, namespace
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to collect deployments from namespace {}: {}",
-                        namespace, e
-                    );
-                }
+        let mut items = Vec::new();
+        for item in list.items {
+            let mut value = serde_json::to_value(&item)?;
+
+            // Sanitize if requested
+            if opts.sanitize {
+                self.sanitize_resource(&mut value);
             }
+
+            items.push(value);
         }
 
-        Ok(all_deployments)
+        Ok(items)
     }
 
-    /// Collect configmaps from specified namespaces
-    pub async fn collect_configmaps(&self, namespaces: &[String]) -> Result<Vec<Value>> {
-        let mut all_configmaps = Vec::new();
+    /// Determine if a resource should be collected based on options
+    fn should_collect_resource(&self, kind: &str, opts: &CollectionOptions) -> bool {
+        match kind {
+            // Always skip these
+            "ComponentStatus" | "Binding" => false,
 
-        for namespace in namespaces {
-            info!("Collecting configmaps from namespace: {}", namespace);
-            let configmaps: Api<ConfigMap> = Api::namespaced(self.client.clone(), namespace);
+            // Secrets
+            "Secret" => opts.include_secrets,
 
-            match configmaps.list(&Default::default()).await {
-                Ok(configmap_list) => {
-                    let configmap_count = configmap_list.items.len();
-                    for configmap in configmap_list.items {
-                        if let Ok(json) = serde_json::to_value(&configmap) {
-                            all_configmaps.push(json);
-                        }
+            // Events
+            "Event" => opts.include_events,
+
+            // ReplicaSets
+            "ReplicaSet" => opts.include_replicasets,
+
+            // Endpoints
+            "Endpoints" | "EndpointSlice" => opts.include_endpoints,
+
+            // Leases
+            "Lease" => opts.include_leases,
+
+            // Custom Resources - check if it's a CRD
+            _ => {
+                // If it contains a dot, it's likely a custom resource
+                // CRDs are typically named like: mycrd.example.com
+                if kind.contains('.') {
+                    // Check specific CRDs list if provided
+                    if let Some(ref crds) = opts.specific_crds {
+                        return crds.iter().any(|crd| kind.eq_ignore_ascii_case(crd));
                     }
-                    info!(
-                        "Found {} configmaps in namespace {}",
-                        configmap_count, namespace
-                    );
+                    // Otherwise check general CR flag
+                    return opts.include_custom_resources;
                 }
-                Err(e) => {
-                    warn!(
-                        "Failed to collect configmaps from namespace {}: {}",
-                        namespace, e
-                    );
-                }
+                // Standard resource, always collect
+                true
             }
         }
-
-        Ok(all_configmaps)
     }
 
-    /// Collect secrets from specified namespaces
-    pub async fn collect_secrets(&self, namespaces: &[String]) -> Result<Vec<Value>> {
-        let mut all_secrets = Vec::new();
-
-        for namespace in namespaces {
-            info!("Collecting secrets from namespace: {}", namespace);
-            let secrets: Api<Secret> = Api::namespaced(self.client.clone(), namespace);
-
-            match secrets.list(&Default::default()).await {
-                Ok(secret_list) => {
-                    let secret_count = secret_list.items.len();
-                    for secret in secret_list.items {
-                        if let Ok(json) = serde_json::to_value(&secret) {
-                            all_secrets.push(json);
-                        }
-                    }
-                    info!("Found {} secrets in namespace {}", secret_count, namespace);
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to collect secrets from namespace {}: {}",
-                        namespace, e
-                    );
-                }
+    /// Sanitize a resource for kubectl apply readiness
+    fn sanitize_resource(&self, value: &mut Value) {
+        if let Some(obj) = value.as_object_mut() {
+            // Remove metadata fields
+            if let Some(metadata) = obj.get_mut("metadata").and_then(|m| m.as_object_mut()) {
+                metadata.remove("uid");
+                metadata.remove("resourceVersion");
+                metadata.remove("selfLink");
+                metadata.remove("creationTimestamp");
+                metadata.remove("generation");
+                metadata.remove("managedFields");
             }
-        }
 
-        Ok(all_secrets)
+            // Remove status entirely
+            obj.remove("status");
+        }
     }
 }

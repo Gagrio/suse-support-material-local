@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
-use tracing::info;
+use tracing::{debug, info};
 
 pub struct OutputManager {
     base_dir: String,
@@ -22,49 +23,100 @@ impl OutputManager {
         let timestamp_str = self.timestamp.format("%Y-%m-%d-%H-%M-%S");
         let output_dir = format!("{}/ketchup-{}", self.base_dir, timestamp_str);
 
-        info!("Creating output directory: {}", output_dir);
+        info!("📁 Creating output directory: {}", output_dir);
         fs::create_dir_all(&output_dir).context("Failed to create output directory")?;
 
         Ok(output_dir)
     }
 
-    /// Save individual pods to namespace/pods/ structure
-    pub fn save_pods_individually(
+    /// Save cluster-scoped resources
+    pub fn save_cluster_resources(
+        &self,
+        output_dir: &str,
+        resources: &HashMap<String, Vec<Value>>,
+        format: &str,
+    ) -> Result<HashMap<String, usize>> {
+        let cluster_dir = format!("{}/cluster", output_dir);
+        fs::create_dir_all(&cluster_dir).context("Failed to create cluster directory")?;
+
+        let mut stats = HashMap::new();
+
+        for (kind, items) in resources {
+            let count = self.save_resource_type(&cluster_dir, kind, items, format)?;
+            stats.insert(kind.clone(), count);
+        }
+
+        Ok(stats)
+    }
+
+    /// Save namespace-scoped resources
+    pub fn save_namespace_resources(
         &self,
         output_dir: &str,
         namespace: &str,
-        pods: &[Value],
+        resources: &HashMap<String, Vec<Value>>,
+        format: &str,
+    ) -> Result<HashMap<String, usize>> {
+        let namespace_dir = format!("{}/{}", output_dir, namespace);
+        fs::create_dir_all(&namespace_dir).context(format!(
+            "Failed to create namespace directory: {}",
+            namespace
+        ))?;
+
+        let mut stats = HashMap::new();
+
+        for (kind, items) in resources {
+            let count = self.save_resource_type(&namespace_dir, kind, items, format)?;
+            stats.insert(kind.clone(), count);
+        }
+
+        Ok(stats)
+    }
+
+    /// Save a specific resource type
+    fn save_resource_type(
+        &self,
+        base_dir: &str,
+        kind: &str,
+        items: &[Value],
         format: &str,
     ) -> Result<usize> {
-        let pods_dir = format!("{}/{}/pods", output_dir, namespace);
-        fs::create_dir_all(&pods_dir).context("Failed to create namespace pods directory")?;
+        if items.is_empty() {
+            return Ok(0);
+        }
+
+        // Create resource type directory
+        let resource_dir = format!("{}/{}", base_dir, kind.to_lowercase());
+        fs::create_dir_all(&resource_dir)
+            .context(format!("Failed to create directory for {}", kind))?;
 
         let mut saved_count = 0;
-        for pod in pods {
-            if let Some(pod_name) = pod
+
+        for item in items {
+            if let Some(name) = item
                 .get("metadata")
                 .and_then(|m| m.get("name"))
                 .and_then(|n| n.as_str())
             {
                 match format {
                     "json" => {
-                        let filename = format!("{}/{}.json", pods_dir, pod_name);
-                        let content = serde_json::to_string_pretty(pod)?;
+                        let filename = format!("{}/{}.json", resource_dir, name);
+                        let content = serde_json::to_string_pretty(item)?;
                         fs::write(&filename, content)?;
                         saved_count += 1;
                     }
                     "yaml" => {
-                        let filename = format!("{}/{}.yaml", pods_dir, pod_name);
-                        let content = serde_yaml::to_string(pod)?;
+                        let filename = format!("{}/{}.yaml", resource_dir, name);
+                        let content = serde_yaml::to_string(item)?;
                         fs::write(&filename, content)?;
                         saved_count += 1;
                     }
                     "both" => {
-                        let json_file = format!("{}/{}.json", pods_dir, pod_name);
-                        let yaml_file = format!("{}/{}.yaml", pods_dir, pod_name);
+                        let json_file = format!("{}/{}.json", resource_dir, name);
+                        let yaml_file = format!("{}/{}.yaml", resource_dir, name);
 
-                        let json_content = serde_json::to_string_pretty(pod)?;
-                        let yaml_content = serde_yaml::to_string(pod)?;
+                        let json_content = serde_json::to_string_pretty(item)?;
+                        let yaml_content = serde_yaml::to_string(item)?;
 
                         fs::write(&json_file, json_content)?;
                         fs::write(&yaml_file, yaml_content)?;
@@ -75,299 +127,100 @@ impl OutputManager {
             }
         }
 
-        info!("Saved {} pods to {}", saved_count, pods_dir);
+        debug!("Saved {} {} resources", saved_count, kind);
         Ok(saved_count)
     }
 
-    /// Save individual services to namespace/services/ structure
-    pub fn save_services_individually(
+    /// Create collection summary
+    pub fn create_collection_summary(
         &self,
         output_dir: &str,
-        namespace: &str,
-        services: &[Value],
-        format: &str,
-    ) -> Result<usize> {
-        let services_dir = format!("{}/{}/services", output_dir, namespace);
-        fs::create_dir_all(&services_dir)
-            .context("Failed to create namespace services directory")?;
-
-        let mut saved_count = 0;
-        for service in services {
-            if let Some(service_name) = service
-                .get("metadata")
-                .and_then(|m| m.get("name"))
-                .and_then(|n| n.as_str())
-            {
-                match format {
-                    "json" => {
-                        let filename = format!("{}/{}.json", services_dir, service_name);
-                        let content = serde_json::to_string_pretty(service)?;
-                        fs::write(&filename, content)?;
-                        saved_count += 1;
-                    }
-                    "yaml" => {
-                        let filename = format!("{}/{}.yaml", services_dir, service_name);
-                        let content = serde_yaml::to_string(service)?;
-                        fs::write(&filename, content)?;
-                        saved_count += 1;
-                    }
-                    "both" => {
-                        let json_file = format!("{}/{}.json", services_dir, service_name);
-                        let yaml_file = format!("{}/{}.yaml", services_dir, service_name);
-
-                        let json_content = serde_json::to_string_pretty(service)?;
-                        let yaml_content = serde_yaml::to_string(service)?;
-
-                        fs::write(&json_file, json_content)?;
-                        fs::write(&yaml_file, yaml_content)?;
-                        saved_count += 1;
-                    }
-                    _ => return Err(anyhow::anyhow!("Invalid format: {}", format)),
-                }
-            }
-        }
-
-        info!("Saved {} services to {}", saved_count, services_dir);
-        Ok(saved_count)
-    }
-
-    /// Save individual deployments to namespace/deployments/ structure
-    pub fn save_deployments_individually(
-        &self,
-        output_dir: &str,
-        namespace: &str,
-        deployments: &[Value],
-        format: &str,
-    ) -> Result<usize> {
-        let deployments_dir = format!("{}/{}/deployments", output_dir, namespace);
-        fs::create_dir_all(&deployments_dir)
-            .context("Failed to create namespace deployments directory")?;
-
-        let mut saved_count = 0;
-        for deployment in deployments {
-            if let Some(deployment_name) = deployment
-                .get("metadata")
-                .and_then(|m| m.get("name"))
-                .and_then(|n| n.as_str())
-            {
-                match format {
-                    "json" => {
-                        let filename = format!("{}/{}.json", deployments_dir, deployment_name);
-                        let content = serde_json::to_string_pretty(deployment)?;
-                        fs::write(&filename, content)?;
-                        saved_count += 1;
-                    }
-                    "yaml" => {
-                        let filename = format!("{}/{}.yaml", deployments_dir, deployment_name);
-                        let content = serde_yaml::to_string(deployment)?;
-                        fs::write(&filename, content)?;
-                        saved_count += 1;
-                    }
-                    "both" => {
-                        let json_file = format!("{}/{}.json", deployments_dir, deployment_name);
-                        let yaml_file = format!("{}/{}.yaml", deployments_dir, deployment_name);
-
-                        let json_content = serde_json::to_string_pretty(deployment)?;
-                        let yaml_content = serde_yaml::to_string(deployment)?;
-
-                        fs::write(&json_file, json_content)?;
-                        fs::write(&yaml_file, yaml_content)?;
-                        saved_count += 1;
-                    }
-                    _ => return Err(anyhow::anyhow!("Invalid format: {}", format)),
-                }
-            }
-        }
-
-        info!("Saved {} deployments to {}", saved_count, deployments_dir);
-        Ok(saved_count)
-    }
-
-    /// Save individual configmaps to namespace/configmaps/ structure
-    pub fn save_configmaps_individually(
-        &self,
-        output_dir: &str,
-        namespace: &str,
-        configmaps: &[Value],
-        format: &str,
-    ) -> Result<usize> {
-        let configmaps_dir = format!("{}/{}/configmaps", output_dir, namespace);
-        fs::create_dir_all(&configmaps_dir)
-            .context("Failed to create namespace configmaps directory")?;
-
-        let mut saved_count = 0;
-        for configmap in configmaps {
-            if let Some(configmap_name) = configmap
-                .get("metadata")
-                .and_then(|m| m.get("name"))
-                .and_then(|n| n.as_str())
-            {
-                match format {
-                    "json" => {
-                        let filename = format!("{}/{}.json", configmaps_dir, configmap_name);
-                        let content = serde_json::to_string_pretty(configmap)?;
-                        fs::write(&filename, content)?;
-                        saved_count += 1;
-                    }
-                    "yaml" => {
-                        let filename = format!("{}/{}.yaml", configmaps_dir, configmap_name);
-                        let content = serde_yaml::to_string(configmap)?;
-                        fs::write(&filename, content)?;
-                        saved_count += 1;
-                    }
-                    "both" => {
-                        let json_file = format!("{}/{}.json", configmaps_dir, configmap_name);
-                        let yaml_file = format!("{}/{}.yaml", configmaps_dir, configmap_name);
-
-                        let json_content = serde_json::to_string_pretty(configmap)?;
-                        let yaml_content = serde_yaml::to_string(configmap)?;
-
-                        fs::write(&json_file, json_content)?;
-                        fs::write(&yaml_file, yaml_content)?;
-                        saved_count += 1;
-                    }
-                    _ => return Err(anyhow::anyhow!("Invalid format: {}", format)),
-                }
-            }
-        }
-
-        info!("Saved {} configmaps to {}", saved_count, configmaps_dir);
-        Ok(saved_count)
-    }
-
-    /// Save individual secrets to namespace/secrets/ structure
-    pub fn save_secrets_individually(
-        &self,
-        output_dir: &str,
-        namespace: &str,
-        secrets: &[Value],
-        format: &str,
-    ) -> Result<usize> {
-        let secrets_dir = format!("{}/{}/secrets", output_dir, namespace);
-        fs::create_dir_all(&secrets_dir).context("Failed to create namespace secrets directory")?;
-
-        let mut saved_count = 0;
-        for secret in secrets {
-            if let Some(secret_name) = secret
-                .get("metadata")
-                .and_then(|m| m.get("name"))
-                .and_then(|n| n.as_str())
-            {
-                match format {
-                    "json" => {
-                        let filename = format!("{}/{}.json", secrets_dir, secret_name);
-                        let content = serde_json::to_string_pretty(secret)?;
-                        fs::write(&filename, content)?;
-                        saved_count += 1;
-                    }
-                    "yaml" => {
-                        let filename = format!("{}/{}.yaml", secrets_dir, secret_name);
-                        let content = serde_yaml::to_string(secret)?;
-                        fs::write(&filename, content)?;
-                        saved_count += 1;
-                    }
-                    "both" => {
-                        let json_file = format!("{}/{}.json", secrets_dir, secret_name);
-                        let yaml_file = format!("{}/{}.yaml", secrets_dir, secret_name);
-
-                        let json_content = serde_json::to_string_pretty(secret)?;
-                        let yaml_content = serde_yaml::to_string(secret)?;
-
-                        fs::write(&json_file, json_content)?;
-                        fs::write(&yaml_file, yaml_content)?;
-                        saved_count += 1;
-                    }
-                    _ => return Err(anyhow::anyhow!("Invalid format: {}", format)),
-                }
-            }
-        }
-
-        info!("Saved {} secrets to {}", saved_count, secrets_dir);
-        Ok(saved_count)
-    }
-
-    /// Create enhanced summary with per-namespace resource breakdown
-    pub fn create_enhanced_summary(
-        &self,
-        output_dir: &str,
-        namespace_stats: &[(String, usize, usize, usize, usize, usize)],
-        secrets_collected: bool,
+        cluster_stats: &HashMap<String, usize>,
+        namespace_stats: &[(String, HashMap<String, usize>)],
+        opts: &crate::k8s::CollectionOptions,
     ) -> Result<()> {
-        let mut total_pods = 0;
-        let mut total_services = 0;
-        let mut total_deployments = 0;
-        let mut total_configmaps = 0;
-        let mut total_secrets = 0;
-        let mut namespace_details = serde_json::Map::new();
+        // Calculate totals
+        let total_cluster_resources: usize = cluster_stats.values().sum();
+        let mut total_namespaced_resources = 0;
+        let mut resource_type_totals: HashMap<String, usize> = HashMap::new();
 
-        for (
-            namespace,
-            pod_count,
-            service_count,
-            deployment_count,
-            configmap_count,
-            secret_count,
-        ) in namespace_stats
-        {
-            total_pods += pod_count;
-            total_services += service_count;
-            total_deployments += deployment_count;
-            total_configmaps += configmap_count;
-            total_secrets += secret_count;
-
-            let mut ns_detail = serde_json::json!({
-                "pods_collected": pod_count,
-                "services_collected": service_count,
-                "deployments_collected": deployment_count,
-                "configmaps_collected": configmap_count,
-            });
-
-            if secrets_collected {
-                ns_detail["secrets_collected"] = serde_json::json!(secret_count);
-                ns_detail["total_resources"] = serde_json::json!(
-                    pod_count + service_count + deployment_count + configmap_count + secret_count
-                );
-            } else {
-                ns_detail["total_resources"] = serde_json::json!(
-                    pod_count + service_count + deployment_count + configmap_count
-                );
+        // Aggregate namespace stats
+        for (_ns, stats) in namespace_stats {
+            for (kind, count) in stats {
+                total_namespaced_resources += count;
+                *resource_type_totals.entry(kind.clone()).or_insert(0) += count;
             }
-
-            namespace_details.insert(namespace.clone(), ns_detail);
         }
 
-        let mut cluster_summary = serde_json::json!({
-            "total_namespaces": namespace_stats.len(),
-            "total_pods": total_pods,
-            "total_services": total_services,
-            "total_deployments": total_deployments,
-            "total_configmaps": total_configmaps,
+        // Add cluster stats to resource totals
+        for (kind, count) in cluster_stats {
+            *resource_type_totals.entry(kind.clone()).or_insert(0) += count;
+        }
+
+        // Build namespace details
+        let mut namespace_details = serde_json::Map::new();
+        for (ns, stats) in namespace_stats {
+            let total: usize = stats.values().sum();
+            namespace_details.insert(
+                ns.clone(),
+                serde_json::json!({
+                    "total_resources": total,
+                    "resource_types": stats,
+                }),
+            );
+        }
+
+        // Build cluster details
+        let cluster_details = serde_json::json!({
+            "total_resources": total_cluster_resources,
+            "resource_types": cluster_stats,
         });
 
-        if secrets_collected {
-            cluster_summary["total_secrets"] = serde_json::json!(total_secrets);
-            cluster_summary["total_resources"] = serde_json::json!(
-                total_pods + total_services + total_deployments + total_configmaps + total_secrets
-            );
-        } else {
-            cluster_summary["secrets_collected"] = serde_json::json!(false);
-            cluster_summary["total_resources"] = serde_json::json!(
-                total_pods + total_services + total_deployments + total_configmaps
-            );
+        // Build collection options summary
+        let mut collection_flags = Vec::new();
+        if opts.include_secrets {
+            collection_flags.push("secrets");
+        }
+        if opts.include_custom_resources {
+            collection_flags.push("custom_resources");
+        }
+        if let Some(ref crds) = opts.specific_crds {
+            collection_flags.push(&format!("specific_crds: {:?}", crds));
+        }
+        if opts.include_events {
+            collection_flags.push("events");
+        }
+        if opts.include_replicasets {
+            collection_flags.push("replicasets");
+        }
+        if opts.include_endpoints {
+            collection_flags.push("endpoints");
+        }
+        if opts.include_leases {
+            collection_flags.push("leases");
         }
 
         let summary = serde_json::json!({
             "collection_info": {
                 "timestamp": self.timestamp.to_rfc3339(),
                 "tool": "ketchup",
-                "version": env!("CARGO_PKG_VERSION")
+                "version": env!("CARGO_PKG_VERSION"),
+                "sanitized": opts.sanitize,
+                "optional_resources_included": collection_flags,
             },
-            "cluster_summary": cluster_summary,
-            "namespace_details": namespace_details
+            "cluster_summary": {
+                "total_namespaces": namespace_stats.len(),
+                "total_cluster_resources": total_cluster_resources,
+                "total_namespaced_resources": total_namespaced_resources,
+                "total_resources": total_cluster_resources + total_namespaced_resources,
+                "resource_type_counts": resource_type_totals,
+            },
+            "cluster_resources": cluster_details,
+            "namespace_details": namespace_details,
         });
 
         let filename = format!("{}/collection-summary.yaml", output_dir);
-        info!("Creating enhanced collection summary: {}", filename);
+        info!("📊 Creating collection summary: {}", filename);
 
         let summary_content =
             serde_yaml::to_string(&summary).context("Failed to serialize summary to YAML")?;
@@ -376,7 +229,7 @@ impl OutputManager {
         Ok(())
     }
 
-    /// Create archive based on compression preference
+    /// Handle compression based on user preference
     pub fn handle_compression(
         &self,
         output_dir: &str,
@@ -388,12 +241,12 @@ impl OutputManager {
                 Ok(Some(archive_path))
             }
             "uncompressed" => {
-                info!("Skipping compression as requested");
+                info!("⏭️  Skipping compression as requested");
                 Ok(None)
             }
             "both" => {
                 let archive_path = self.create_archive(output_dir)?;
-                info!("Files available both compressed and uncompressed");
+                info!("📦 Files available both compressed and uncompressed");
                 Ok(Some(archive_path))
             }
             _ => {
@@ -406,9 +259,9 @@ impl OutputManager {
     }
 
     /// Create compressed archive of the output directory
-    pub fn create_archive(&self, output_dir: &str) -> Result<String> {
+    fn create_archive(&self, output_dir: &str) -> Result<String> {
         let archive_name = format!("{}.tar.gz", output_dir);
-        info!("Creating compressed archive: {}", archive_name);
+        info!("🗜️  Creating compressed archive: {}", archive_name);
 
         let tar_gz =
             std::fs::File::create(&archive_name).context("Failed to create archive file")?;
@@ -418,7 +271,6 @@ impl OutputManager {
         tar.append_dir_all(".", output_dir)
             .context("Failed to add directory to archive")?;
         tar.finish().context("Failed to finalize archive")?;
-        info!("Archive created successfully: {}", archive_name);
 
         Ok(archive_name)
     }

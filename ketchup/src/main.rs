@@ -1,22 +1,23 @@
 use anyhow::Result;
 use clap::Parser;
 use output::OutputManager;
-use serde_json::Value;
-use tracing::info;
+use tracing::{debug, info};
 
 mod k8s;
 mod output;
 
 #[derive(Parser, Debug)]
 #[command(name = "ketchup")]
-#[command(about = "Collect Kubernetes cluster configurations")]
+#[command(
+    about = "Collects all Kubernetes resources needed to recreate a cluster setup.\nBy default, resources are sanitized for kubectl apply readiness."
+)]
 #[command(version)]
 struct Args {
     /// Path to kubeconfig file (required)
     #[arg(short, long)]
     kubeconfig: String,
 
-    /// Namespaces to collect from (comma-separated)
+    /// Namespaces to collect from (comma-separated, default: all namespaces)
     #[arg(short, long)]
     namespaces: Option<String>,
 
@@ -32,13 +33,45 @@ struct Args {
     #[arg(short = 'c', long, default_value = "compressed", value_parser = ["compressed", "uncompressed", "both"])]
     compression: String,
 
-    /// Collect secrets (disabled by default for security)
-    #[arg(short = 's', long, default_value = "false")]
-    collect_secrets: bool,
+    /// Include Secrets (disabled by default for security)
+    #[arg(short = 's', long)]
+    include_secrets: bool,
 
-    /// Verbose logging
+    /// Include Custom Resource instances (disabled by default, may show API errors)
+    #[arg(short = 'C', long)]
+    include_custom_resources: bool,
+
+    /// Include Events (disabled by default, high volume)
+    #[arg(short = 'E', long)]
+    include_events: bool,
+
+    /// Include ReplicaSets (disabled by default, redundant with Deployments)
+    #[arg(short = 'R', long)]
+    include_replicasets: bool,
+
+    /// Include Endpoints/EndpointSlices (disabled by default, redundant with Services)
+    #[arg(short = 'P', long)]
+    include_endpoints: bool,
+
+    /// Include Leases (disabled by default, high churn)
+    #[arg(short = 'L', long)]
+    include_leases: bool,
+
+    /// Collect specific CRD instances only (comma-separated list of CRD names)
+    #[arg(long)]
+    crds: Option<String>,
+
+    /// Collect raw unsanitized resources (default: sanitize for kubectl apply readiness)
+    #[arg(short = 'r', long)]
+    raw: bool,
+
+    /// Verbose logging (progress and summaries)
     #[arg(short, long)]
     verbose: bool,
+
+    /// Debug logging (includes HTTP requests and detailed traces)
+    #[arg(short = 'd', long)]
+    debug: bool,
 }
 
 #[tokio::main]
@@ -46,217 +79,169 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Initialize logging
-    init_logging(args.verbose);
+    init_logging(args.verbose, args.debug);
 
-    info!("Starting Ketchup - Kubernetes Config Collector");
+    info!("🍅 Starting Ketchup - Kubernetes Config Collector");
     info!("Using kubeconfig: {}", args.kubeconfig);
+
+    if !args.raw {
+        info!("Resources will be sanitized for kubectl apply readiness (use --raw to disable)");
+    }
 
     // Connect to Kubernetes using specified kubeconfig
     let kube_client = k8s::KubeClient::new_client(&args.kubeconfig).await?;
 
     // Determine which namespaces to collect from
-    let requested_namespaces = if let Some(ns_str) = &args.namespaces {
-        ns_str.split(',').map(|s| s.trim().to_string()).collect()
+    let namespaces = if let Some(ns_str) = &args.namespaces {
+        let requested: Vec<String> = ns_str.split(',').map(|s| s.trim().to_string()).collect();
+        kube_client.verify_namespaces(&requested).await?
     } else {
-        vec!["default".to_string()]
+        info!("No namespaces specified, collecting from all namespaces");
+        kube_client.list_namespaces().await?
     };
 
-    let verified_namespaces = kube_client.verify_namespaces(&requested_namespaces).await?;
-    info!("Will collect from namespaces: {:?}", verified_namespaces);
+    info!(
+        "Will collect from {} namespace(s): {:?}",
+        namespaces.len(),
+        namespaces
+    );
     info!("Output directory: {}", args.output);
 
-    // Collect pods from verified namespaces
-    info!("Starting pod collection...");
-    let pods = kube_client.collect_pods(&verified_namespaces).await?;
-    info!("Successfully collected {} pods total", pods.len());
-
-    // Collect services from verified namespaces
-    info!("Starting service collection...");
-    let services = kube_client.collect_services(&verified_namespaces).await?;
-    info!("Successfully collected {} services total", services.len());
-
-    // Collect deployments from verified namespaces
-    info!("Starting deployment collection...");
-    let deployments = kube_client
-        .collect_deployments(&verified_namespaces)
-        .await?;
-    info!(
-        "Successfully collected {} deployments total",
-        deployments.len()
-    );
-
-    // Collect ConfigMaps from verified namespaces
-    info!("Starting ConfigMap collection...");
-    let configmaps = kube_client.collect_configmaps(&verified_namespaces).await?;
-    info!(
-        "Successfully collected {} configmaps total",
-        configmaps.len()
-    );
-
-    // Collect Secrets from verified namespaces (only if --collect-secrets flag is set)
-    let secrets = if args.collect_secrets {
-        info!("Starting secret collection...");
-        let collected_secrets = kube_client.collect_secrets(&verified_namespaces).await?;
-        info!(
-            "Successfully collected {} secrets total",
-            collected_secrets.len()
-        );
-        collected_secrets
-    } else {
-        info!("Secret collection disabled (use --collect-secrets to enable)");
-        Vec::new()
+    // Build collection options
+    let collection_opts = k8s::CollectionOptions {
+        include_secrets: args.include_secrets,
+        include_custom_resources: args.include_custom_resources,
+        include_events: args.include_events,
+        include_replicasets: args.include_replicasets,
+        include_endpoints: args.include_endpoints,
+        include_leases: args.include_leases,
+        specific_crds: args
+            .crds
+            .as_ref()
+            .map(|crds| crds.split(',').map(|s| s.trim().to_string()).collect()),
+        sanitize: !args.raw,
     };
 
-    // Create output manager and save files
-    info!("Setting up file output...");
-    info!(
-        "Output format: {}, Compression: {}",
-        args.format, args.compression
-    );
-    let output_manager = OutputManager::new_output_manager(args.output);
+    // Log what will be collected
+    log_collection_plan(&collection_opts);
+
+    // Create output manager
+    let output_manager = OutputManager::new_output_manager(args.output.clone());
     let output_dir = output_manager.create_output_directory()?;
 
-    // Save resources for each namespace with new structure
+    info!("📦 Collecting cluster-scoped resources...");
+    let cluster_resources = kube_client
+        .collect_cluster_resources(&collection_opts)
+        .await?;
+
+    info!(
+        "✅ Collected {} cluster-scoped resource types",
+        cluster_resources.len()
+    );
+
+    // Save cluster resources
+    let cluster_stats =
+        output_manager.save_cluster_resources(&output_dir, &cluster_resources, &args.format)?;
+
+    info!("📦 Collecting namespaced resources...");
     let mut namespace_stats = Vec::new();
 
-    for namespace in &verified_namespaces {
-        let namespace_pods: Vec<&Value> = pods
-            .iter()
-            .filter(|pod| {
-                pod.get("metadata")
-                    .and_then(|m| m.get("namespace"))
-                    .and_then(|ns| ns.as_str())
-                    == Some(namespace)
-            })
-            .collect();
+    for namespace in &namespaces {
+        info!("📂 Collecting from namespace: {}", namespace);
 
-        let namespace_services: Vec<&Value> = services
-            .iter()
-            .filter(|service| {
-                service
-                    .get("metadata")
-                    .and_then(|m| m.get("namespace"))
-                    .and_then(|ns| ns.as_str())
-                    == Some(namespace)
-            })
-            .collect();
+        let ns_resources = kube_client
+            .collect_namespace_resources(namespace, &collection_opts)
+            .await?;
 
-        let namespace_deployments: Vec<&Value> = deployments
-            .iter()
-            .filter(|deployment| {
-                deployment
-                    .get("metadata")
-                    .and_then(|m| m.get("namespace"))
-                    .and_then(|ns| ns.as_str())
-                    == Some(namespace)
-            })
-            .collect();
+        debug!(
+            "Collected {} resource types from namespace {}",
+            ns_resources.len(),
+            namespace
+        );
 
-        let namespace_configmaps: Vec<Value> = configmaps
-            .iter()
-            .filter(|configmap| {
-                configmap
-                    .get("metadata")
-                    .and_then(|m| m.get("namespace"))
-                    .and_then(|ns| ns.as_str())
-                    == Some(namespace)
-            })
-            .cloned()
-            .collect();
-
-        let namespace_secrets: Vec<&Value> = secrets
-            .iter()
-            .filter(|secret| {
-                secret
-                    .get("metadata")
-                    .and_then(|m| m.get("namespace"))
-                    .and_then(|ns| ns.as_str())
-                    == Some(namespace)
-            })
-            .collect();
-
-        let namespace_pod_values: Vec<Value> = namespace_pods.iter().map(|&p| p.clone()).collect();
-
-        let namespace_service_values: Vec<Value> =
-            namespace_services.iter().map(|&s| s.clone()).collect();
-
-        let namespace_deployment_values: Vec<Value> =
-            namespace_deployments.iter().map(|&d| d.clone()).collect();
-
-        let namespace_configmap_values: Vec<Value> =
-            namespace_configmaps.iter().map(|c| c.clone()).collect();
-
-        let namespace_secret_values: Vec<Value> =
-            namespace_secrets.iter().map(|c| (*c).clone()).collect();
-
-        let pods_saved = output_manager.save_pods_individually(
+        let stats = output_manager.save_namespace_resources(
             &output_dir,
             namespace,
-            &namespace_pod_values,
+            &ns_resources,
             &args.format,
         )?;
 
-        let services_saved = output_manager.save_services_individually(
-            &output_dir,
-            namespace,
-            &namespace_service_values,
-            &args.format,
-        )?;
-
-        let deployments_saved = output_manager.save_deployments_individually(
-            &output_dir,
-            namespace,
-            &namespace_deployment_values,
-            &args.format,
-        )?;
-
-        let configmaps_saved = output_manager.save_configmaps_individually(
-            &output_dir,
-            namespace,
-            &namespace_configmap_values,
-            &args.format,
-        )?;
-
-        let secrets_saved = if args.collect_secrets {
-            output_manager.save_secrets_individually(
-                &output_dir,
-                namespace,
-                &namespace_secret_values,
-                &args.format,
-            )?
-        } else {
-            0
-        };
-
-        namespace_stats.push((
-            namespace.clone(),
-            pods_saved,
-            services_saved,
-            deployments_saved,
-            configmaps_saved,
-            secrets_saved,
-        ));
+        namespace_stats.push((namespace.clone(), stats));
     }
 
-    // Create enhanced summary
-    output_manager.create_enhanced_summary(&output_dir, &namespace_stats, args.collect_secrets)?;
+    // Create summary
+    output_manager.create_collection_summary(
+        &output_dir,
+        &cluster_stats,
+        &namespace_stats,
+        &collection_opts,
+    )?;
 
-    // Handle compression based on user preference
+    // Handle compression
     if let Some(archive_path) = output_manager.handle_compression(&output_dir, &args.compression)? {
-        info!("Archive created: {}", archive_path);
+        info!("📦 Archive created: {}", archive_path);
     }
 
-    info!("Files saved to: {}", output_dir);
-    info!("Collection completed successfully");
+    info!("✅ Collection completed successfully!");
+    info!("📁 Files saved to: {}", output_dir);
+
     Ok(())
 }
 
-fn init_logging(verbose: bool) {
-    let level = if verbose {
+fn init_logging(verbose: bool, debug: bool) {
+    let level = if debug {
         tracing::Level::DEBUG
-    } else {
+    } else if verbose {
         tracing::Level::INFO
+    } else {
+        tracing::Level::WARN
     };
 
-    tracing_subscriber::fmt().with_max_level(level).init();
+    tracing_subscriber::fmt()
+        .with_max_level(level)
+        .with_target(debug)
+        .init();
+}
+
+fn log_collection_plan(opts: &k8s::CollectionOptions) {
+    info!("📋 Collection plan:");
+    info!("  - Core resources: ✅ Always collected");
+
+    if opts.include_secrets {
+        info!("  - Secrets: ✅ Enabled");
+    } else {
+        debug!("  - Secrets: ⏭️  Skipped (use -s to enable)");
+    }
+
+    if opts.include_custom_resources {
+        info!("  - Custom Resources: ✅ Enabled");
+    } else if let Some(ref crds) = opts.specific_crds {
+        info!("  - Custom Resources: ✅ Specific CRDs: {:?}", crds);
+    } else {
+        debug!("  - Custom Resources: ⏭️  Skipped (use -C to enable)");
+    }
+
+    if opts.include_events {
+        info!("  - Events: ✅ Enabled");
+    } else {
+        debug!("  - Events: ⏭️  Skipped (use -E to enable)");
+    }
+
+    if opts.include_replicasets {
+        info!("  - ReplicaSets: ✅ Enabled");
+    } else {
+        debug!("  - ReplicaSets: ⏭️  Skipped (use -R to enable)");
+    }
+
+    if opts.include_endpoints {
+        info!("  - Endpoints: ✅ Enabled");
+    } else {
+        debug!("  - Endpoints: ⏭️  Skipped (use -P to enable)");
+    }
+
+    if opts.include_leases {
+        info!("  - Leases: ✅ Enabled");
+    } else {
+        debug!("  - Leases: ⏭️  Skipped (use -L to enable)");
+    }
 }

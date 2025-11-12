@@ -2,33 +2,34 @@
 
 > **Catch up** on your cluster configurations! 🏃‍♂️💨
 
-A blazingly fast 🦀 Rust-powered tool that collects and archives Kubernetes cluster configurations for backup, analysis, and troubleshooting.
+A blazingly fast 🦀 Rust-powered tool that collects and archives **all** Kubernetes cluster configurations for backup, analysis, and troubleshooting by support engineers.
 
 ## ✨ Features
 
 🔐 **Secure & Explicit** - Requires explicit kubeconfig path (no magic auto-discovery)  
-📦 **Multi-Format Output** - Saves configurations in both JSON and YAML formats  
-🗂️ **Organized Structure** - Creates timestamped directories for each collection  
-📊 **Collection Summaries** - Generates detailed metadata about what was collected  
+📦 **Comprehensive Collection** - Collects ALL cluster and namespaced resources dynamically  
+🧹 **Smart Sanitization** - Resources sanitized by default for kubectl apply readiness  
+🎯 **Selective Collection** - Opt-in flags for sensitive or high-volume resources  
+🗂️ **Organized Structure** - Cluster and namespace resources in separate directories  
+📊 **Detailed Summaries** - Complete metadata about what was collected  
 🗜️ **Compressed Archives** - Creates `.tar.gz` archives for easy storage and sharing  
-🐳 **Container Ready** - Uses `/tmp` for output, perfect for containerized environments  
-🚀 **Production Tested** - Works with real Kubernetes clusters (tested with K3s)  
+🐳 **Container Ready** - Perfect for containerized environments with SELinux support  
 ⚡ **Fast & Reliable** - Built with Rust for maximum performance and safety  
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- 🦀 **Rust** (install via [rustup](https://rustup.rs/))
+- 🦀 **Rust 1.70+** (install via [rustup](https://rustup.rs/))
 - ☸️ **Kubernetes cluster** with accessible kubeconfig
-- 📁 **Write access** to `/tmp` directory
+- 📁 **Write access** to output directory
 
 ### Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/Gagrio/suse-support-material.git
-cd suse-support-material/ketchup
+git clone https://github.com/Gagrio/suse-support-material-local.git
+cd suse-support-material-local/ketchup
 
 # Build the tool
 cargo build --release
@@ -42,22 +43,26 @@ cargo run -- --kubeconfig ~/.kube/config --verbose
 ### Basic Usage
 
 ```bash
-# Collect from default namespace
+# Collect from all namespaces with defaults
 cargo run -- --kubeconfig ~/.kube/config
 
 # Collect from specific namespaces
 cargo run -- --kubeconfig ~/.kube/config --namespaces "kube-system,default"
 
-# Include secrets in collection (disabled by default)
-cargo run -- --kubeconfig ~/.kube/config --collect-secrets
-# Or using short flag:
-cargo run -- --kubeconfig ~/.kube/config -s
-
-# Verbose output with detailed logging
+# Verbose output with progress
 cargo run -- --kubeconfig ~/.kube/config --verbose
 
-# Custom output directory
-cargo run -- --kubeconfig ~/.kube/config --output /my/backup/dir
+# Debug output with HTTP traces
+cargo run -- --kubeconfig ~/.kube/config --debug
+
+# Include secrets (disabled by default for security)
+cargo run -- --kubeconfig ~/.kube/config --include-secrets
+
+# Include custom resources (may show API errors, can be ignored)
+cargo run -- --kubeconfig ~/.kube/config --include-custom-resources
+
+# Collect raw unsanitized resources
+cargo run -- --kubeconfig ~/.kube/config --raw
 ```
 
 ### Command Line Options
@@ -65,73 +70,209 @@ cargo run -- --kubeconfig ~/.kube/config --output /my/backup/dir
 | Option | Short | Description | Default |
 |--------|-------|-------------|---------|
 | `--kubeconfig` | `-k` | **Required** Path to kubeconfig file | - |
-| `--namespaces` | `-n` | Comma-separated list of namespaces | `default` |
+| `--namespaces` | `-n` | Comma-separated list of namespaces | All namespaces |
 | `--output` | `-o` | Output directory for archives | `/tmp` |
 | `--format` | `-f` | Output format: json, yaml, or both | `yaml` |
 | `--compression` | `-c` | Compression: compressed, uncompressed, or both | `compressed` |
-| `--collect-secrets` | `-s` | **Collect secrets (disabled by default for security)** | `false` |
-| `--verbose` | `-v` | Enable verbose logging | `false` |
+| `--include-secrets` | `-s` | Include Secrets (disabled by default for security) | `false` |
+| `--include-custom-resources` | `-C` | Include CRD instances (disabled by default) | `false` |
+| `--include-events` | `-E` | Include Events (disabled by default, high volume) | `false` |
+| `--include-replicasets` | `-R` | Include ReplicaSets (disabled by default) | `false` |
+| `--include-endpoints` | `-P` | Include Endpoints/EndpointSlices (disabled by default) | `false` |
+| `--include-leases` | `-L` | Include Leases (disabled by default) | `false` |
+| `--crds` | - | Collect specific CRD instances only (comma-separated) | - |
+| `--raw` | `-r` | Skip sanitization, collect raw resources | `false` |
+| `--verbose` | `-v` | Verbose logging (progress and summaries) | `false` |
+| `--debug` | `-d` | Debug logging (HTTP requests and traces) | `false` |
 | `--help` | `-h` | Show help message | - |
+
+## 📦 What Gets Collected?
+
+### Core Resources (Always Collected)
+
+**Cluster-Scoped Resources:**
+- ✅ Nodes - Cluster infrastructure
+- ✅ Namespaces - Namespace definitions
+- ✅ PersistentVolumes - Storage resources
+- ✅ StorageClasses - Storage types
+- ✅ ClusterRoles - Cluster-wide permissions
+- ✅ ClusterRoleBindings - Cluster permission assignments
+- ✅ CustomResourceDefinitions - CRD definitions
+
+**Namespaced Resources:**
+- ✅ Pods - Running workloads
+- ✅ Services - Network services
+- ✅ Deployments - Deployment configurations
+- ✅ StatefulSets - Stateful workloads
+- ✅ DaemonSets - Node-level workloads
+- ✅ Jobs - Batch jobs
+- ✅ CronJobs - Scheduled jobs
+- ✅ ConfigMaps - Configuration data
+- ✅ PersistentVolumeClaims - Storage claims
+- ✅ Ingresses - Ingress rules
+- ✅ NetworkPolicies - Network policies
+- ✅ ServiceAccounts - Service identities
+- ✅ Roles - Namespace permissions
+- ✅ RoleBindings - Permission assignments
+
+### Optional Resources (Opt-In with Flags)
+
+| Resource | Flag | Why Opt-In? |
+|----------|------|-------------|
+| **Secrets** | `-s, --include-secrets` | Contains sensitive data (passwords, tokens, certificates) |
+| **Custom Resources** | `-C, --include-custom-resources` | Can be large, may cause API errors in resource-constrained clusters |
+| **Specific CRDs** | `--crds <list>` | Collect only specified CRD instances |
+| **Events** | `-E, --include-events` | High volume, temporary data, typically not useful for config analysis |
+| **ReplicaSets** | `-R, --include-replicasets` | Auto-created by Deployments, redundant information |
+| **Endpoints** | `-P, --include-endpoints` | Auto-managed by Services, redundant information |
+| **Leases** | `-L, --include-leases` | High churn leader election data, not configuration |
 
 ## 📁 Output Structure
 
-Ketchup creates organized, timestamped output:
+Ketchup creates organized, timestamped output with cluster and namespace separation:
 
 ```
-/tmp/ketchup-2025-06-11-19-46-40/
-├── 📄 collection-summary.json       # Collection metadata (JSON)
-├── 📄 collection-summary.yaml       # Collection metadata (YAML) 
-├── 📄 default-pods.json             # Pods from 'default' namespace (JSON)
-├── 📄 default-pods.yaml             # Pods from 'default' namespace (YAML)
-├── 📄 kube-system-pods.json         # Pods from 'kube-system' namespace (JSON)
-└── 📄 kube-system-pods.yaml         # Pods from 'kube-system' namespace (YAML)
+/tmp/ketchup-2025-11-12-14-30-00/
+├── 📄 collection-summary.yaml          # Complete collection metadata
+├── 📂 cluster/                          # Cluster-scoped resources
+│   ├── nodes/
+│   │   ├── node-1.yaml
+│   │   └── node-2.yaml
+│   ├── namespaces/
+│   │   ├── default.yaml
+│   │   └── kube-system.yaml
+│   ├── persistentvolumes/
+│   ├── storageclasses/
+│   ├── clusterroles/
+│   └── clusterrolebindings/
+├── 📂 default/                          # Namespace: default
+│   ├── pods/
+│   ├── services/
+│   ├── deployments/
+│   ├── configmaps/
+│   └── ...
+└── 📂 kube-system/                      # Namespace: kube-system
+    ├── pods/
+    ├── services/
+    ├── deployments/
+    └── ...
 
-# Plus a compressed archive:
-/tmp/ketchup-2025-06-11-19-46-40.tar.gz  🗜️
+# Plus compressed archive:
+/tmp/ketchup-2025-11-12-14-30-00.tar.gz  🗜️
 ```
 
-### Summary File Example
+### Collection Summary Example
 
-```json
-{
-  "collection_info": {
-    "timestamp": "2025-06-11T19:46:40.569981Z",
-    "tool": "ketchup",
-    "version": "0.1.0"
-  },
-  "cluster_info": {
-    "namespaces_requested": ["kube-system", "default"],
-    "namespaces_collected": 2,
-    "total_pods_collected": 7
-  },
-  "files_created": {
-    "json_files": ["kube-system-pods.json", "default-pods.json"],
-    "yaml_files": ["kube-system-pods.yaml", "default-pods.yaml"]
-  }
-}
+```yaml
+collection_info:
+  timestamp: "2025-11-12T14:30:00Z"
+  tool: "ketchup"
+  version: "2.0.0"
+  sanitized: true
+  optional_resources_included:
+    - secrets
+    - custom_resources
+
+cluster_summary:
+  total_namespaces: 5
+  total_cluster_resources: 42
+  total_namespaced_resources: 387
+  total_resources: 429
+  resource_type_counts:
+    Node: 3
+    Pod: 156
+    Service: 48
+    Deployment: 23
+    # ... etc
+
+cluster_resources:
+  total_resources: 42
+  resource_types:
+    Node: 3
+    PersistentVolume: 5
+    StorageClass: 4
+    # ... etc
+
+namespace_details:
+  kube-system:
+    total_resources: 89
+    resource_types:
+      Pod: 34
+      Service: 12
+      # ... etc
 ```
+
+## 🧹 Resource Sanitization
+
+By default, Ketchup **sanitizes** all resources to make them ready for `kubectl apply`. This removes:
+
+- `metadata.uid`
+- `metadata.resourceVersion`
+- `metadata.selfLink`
+- `metadata.creationTimestamp`
+- `metadata.generation`
+- `metadata.managedFields`
+- `status` (entire section)
+
+**Why?** Support engineers can directly apply these resources to recreate cluster state without manual cleanup.
+
+**To collect raw unsanitized resources:** Use the `--raw` or `-r` flag.
 
 ## 🐳 Containerization
 
-Perfect for running in containers! A multi-stage Dockerfile using SUSE BCI images is included in the repository.
+A multi-stage Dockerfile using SUSE BCI images is included in the repository.
 
-Run in container:
+### Running with Podman
+
 ```bash
+# Basic collection
 podman run -v ~/.kube/config:/kubeconfig:ro,Z \
            -v /tmp:/tmp:Z \
-           ketchup --kubeconfig /kubeconfig --output /tmp --verbose
+           ghcr.io/gagrio/ketchup:latest \
+           --kubeconfig /kubeconfig --output /tmp --verbose
+
+# Include secrets and custom resources
+podman run -v ~/.kube/config:/kubeconfig:ro,Z \
+           -v /tmp:/tmp:Z \
+           ghcr.io/gagrio/ketchup:latest \
+           --kubeconfig /kubeconfig --output /tmp -s -C --verbose
 ```
 
 **Notes:**
 - The `:Z` flag is needed for SELinux systems (RHEL, CentOS, Fedora, SUSE) to properly relabel volumes
 - On non-SELinux systems, `:Z` is safely ignored
-- If your kubeconfig points to `localhost` or `127.0.0.1` (e.g., when running on the same host as the cluster), you may need to add `--net=host`:
+- If your kubeconfig points to `localhost` or `127.0.0.1`, add `--net=host`
 
+## 💡 Common Use Cases
+
+### Support Engineers: Complete Cluster State
 ```bash
-podman run --net=host \
-           -v ~/.kube/config:/kubeconfig:ro,Z \
-           -v /tmp:/tmp:Z \
-           ketchup --kubeconfig /kubeconfig --output /tmp --verbose
+# Collect everything for troubleshooting (including secrets)
+ketchup --kubeconfig customer.kubeconfig -s -C --verbose
+```
+
+### Backup Without Secrets
+```bash
+# Safe backup without sensitive data
+ketchup --kubeconfig ~/.kube/config --compression both
+```
+
+### Specific Namespace Analysis
+```bash
+# Focus on production namespace with custom resources
+ketchup --kubeconfig ~/.kube/config -n production -C --verbose
+```
+
+### Raw Resources for Comparison
+```bash
+# Get unmodified resources with all metadata
+ketchup --kubeconfig ~/.kube/config --raw --format both
+```
+
+### Specific CRD Collection
+```bash
+# Only collect specific custom resources
+ketchup --kubeconfig ~/.kube/config --crds "mycrd.example.com,anothercrd.io"
 ```
 
 ## 🔧 Development
@@ -159,42 +300,10 @@ cargo clippy
 
 ```
 src/
-├── main.rs          # 🚪 CLI interface and main application logic
-├── k8s.rs           # ☸️ Kubernetes client and resource collection
+├── main.rs          # 🚪 CLI interface and orchestration
+├── k8s.rs           # ☸️ Dynamic Kubernetes resource collection
 └── output.rs        # 📁 File output and archive management
 ```
-
-## 🛣️ Roadmap
-
-### ✅ Completed
-- [x] 🔐 Explicit kubeconfig requirement
-- [x] 📦 Pod collection with JSON/YAML output
-- [x] 🗂️ Organized file structure
-- [x] 📊 Collection summaries
-- [x] 🗜️ Compressed archives
-
-### 🚧 Coming Soon
-- [ ] ⚙️ **Configuration files** - YAML configs for customizable behavior
-- [ ] 🎯 **More resource types** - Services, Deployments, ConfigMaps, Secrets
-- [ ] 🏷️ **Label selectors** - Filter resources by labels
-- [ ] 📅 **Scheduling** - Automated periodic collections
-- [ ] 🔍 **Diff mode** - Compare configurations between collections
-
-## 🤝 Contributing
-
-We love contributions! 💖
-
-1. 🍴 Fork the repository
-2. 🌟 Create a feature branch
-3. 🛠️ Make your changes
-4. ✅ Add tests if needed
-5. 📤 Submit a pull request
-
-## 📋 Requirements
-
-- 🦀 **Rust 1.70+** (2021 edition)
-- ☸️ **Kubernetes cluster** (any version)
-- 📁 **File system access** for output directory
 
 ## 🐛 Troubleshooting
 
@@ -211,9 +320,15 @@ We love contributions! 💖
 - Check file permissions with `ls -la`
 
 **☸️ "Failed to connect to cluster"**
-- Verify cluster is accessible: `kubectl get nodes`
+- Verify cluster is accessible: `kubectl cluster-info`
 - Check if kubeconfig context is correct
 - Ensure cluster certificates are valid
+
+**⚠️ API errors when collecting custom resources**
+- This is normal in resource-constrained clusters
+- Use `--verbose` to see which resources cause errors
+- Errors can be safely ignored - collection will continue
+- To skip custom resources entirely, don't use `-C` flag
 
 ## 📄 License
 
@@ -222,8 +337,8 @@ This project is part of the SUSE Support Material collection.
 ## 🙏 Acknowledgments
 
 - 🦀 Built with **Rust** for performance and safety
-- ☸️ Uses the **kube-rs** crate for Kubernetes API access
-- 🎨 Inspired by the need for better cluster configuration management
+- ☸️ Uses **kube-rs** with dynamic discovery for comprehensive resource collection
+- 🎨 Designed for support engineers who need complete cluster visibility
 - ☕ Powered by lots of coffee and determination
 
 ---
