@@ -1,7 +1,3 @@
-# Dockerfile for ketchup - Kubernetes Config Collector
-# Optimized version with dependency caching
-# Using SUSE BCI Rust stable image (1.90)
-
 # Build stage
 FROM registry.suse.com/bci/rust:1.90 as builder
 
@@ -39,6 +35,3 @@ RUN mkdir -p /tmp && chmod 1777 /tmp
 
 # Set entrypoint
 ENTRYPOINT ["/usr/local/bin/ketchup"]
-
-# Default command (show help)
-CMD ["--help"]
