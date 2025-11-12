@@ -48,6 +48,11 @@ cargo run -- --kubeconfig ~/.kube/config
 # Collect from specific namespaces
 cargo run -- --kubeconfig ~/.kube/config --namespaces "kube-system,default"
 
+# Include secrets in collection (disabled by default)
+cargo run -- --kubeconfig ~/.kube/config --collect-secrets
+# Or using short flag:
+cargo run -- --kubeconfig ~/.kube/config -s
+
 # Verbose output with detailed logging
 cargo run -- --kubeconfig ~/.kube/config --verbose
 
@@ -62,6 +67,9 @@ cargo run -- --kubeconfig ~/.kube/config --output /my/backup/dir
 | `--kubeconfig` | `-k` | **Required** Path to kubeconfig file | - |
 | `--namespaces` | `-n` | Comma-separated list of namespaces | `default` |
 | `--output` | `-o` | Output directory for archives | `/tmp` |
+| `--format` | `-f` | Output format: json, yaml, or both | `yaml` |
+| `--compression` | `-c` | Compression: compressed, uncompressed, or both | `compressed` |
+| `--collect-secrets` | `-s` | **Collect secrets (disabled by default for security)** | `false` |
 | `--verbose` | `-v` | Enable verbose logging | `false` |
 | `--help` | `-h` | Show help message | - |
 
@@ -105,24 +113,24 @@ Ketchup creates organized, timestamped output:
 
 ## 🐳 Containerization
 
-Perfect for running in containers! Example Dockerfile:
-
-```dockerfile
-FROM rust:1.75 as builder
-WORKDIR /app
-COPY . .
-RUN cargo build --release
-
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/ketchup /usr/local/bin/
-CMD ["ketchup", "--help"]
-```
+Perfect for running in containers! A multi-stage Dockerfile using SUSE BCI images is included in the repository.
 
 Run in container:
 ```bash
-docker run -v ~/.kube/config:/kubeconfig:ro \
-           -v /tmp:/tmp \
+podman run -v ~/.kube/config:/kubeconfig:ro,Z \
+           -v /tmp:/tmp:Z \
+           ketchup --kubeconfig /kubeconfig --output /tmp --verbose
+```
+
+**Notes:**
+- The `:Z` flag is needed for SELinux systems (RHEL, CentOS, Fedora, SUSE) to properly relabel volumes
+- On non-SELinux systems, `:Z` is safely ignored
+- If your kubeconfig points to `localhost` or `127.0.0.1` (e.g., when running on the same host as the cluster), you may need to add `--net=host`:
+
+```bash
+podman run --net=host \
+           -v ~/.kube/config:/kubeconfig:ro,Z \
+           -v /tmp:/tmp:Z \
            ketchup --kubeconfig /kubeconfig --output /tmp --verbose
 ```
 

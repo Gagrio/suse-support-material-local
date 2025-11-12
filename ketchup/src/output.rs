@@ -290,7 +290,8 @@ impl OutputManager {
     pub fn create_enhanced_summary(
         &self,
         output_dir: &str,
-        namespace_stats: &[(String, usize, usize, usize, usize, usize)], // Updated to include secrets
+        namespace_stats: &[(String, usize, usize, usize, usize, usize)],
+        secrets_collected: bool,
     ) -> Result<()> {
         let mut total_pods = 0;
         let mut total_services = 0;
@@ -314,16 +315,44 @@ impl OutputManager {
             total_configmaps += configmap_count;
             total_secrets += secret_count;
 
-            namespace_details.insert(
-                namespace.clone(),
-                serde_json::json!({
-                    "pods_collected": pod_count,
-                    "services_collected": service_count,
-                    "deployments_collected": deployment_count,
-                    "configmaps_collected": configmap_count,
-                    "secrets_collected": secret_count,
-                    "total_resources": pod_count + service_count + deployment_count + configmap_count + secret_count
-                }),
+            let mut ns_detail = serde_json::json!({
+                "pods_collected": pod_count,
+                "services_collected": service_count,
+                "deployments_collected": deployment_count,
+                "configmaps_collected": configmap_count,
+            });
+
+            if secrets_collected {
+                ns_detail["secrets_collected"] = serde_json::json!(secret_count);
+                ns_detail["total_resources"] = serde_json::json!(
+                    pod_count + service_count + deployment_count + configmap_count + secret_count
+                );
+            } else {
+                ns_detail["total_resources"] = serde_json::json!(
+                    pod_count + service_count + deployment_count + configmap_count
+                );
+            }
+
+            namespace_details.insert(namespace.clone(), ns_detail);
+        }
+
+        let mut cluster_summary = serde_json::json!({
+            "total_namespaces": namespace_stats.len(),
+            "total_pods": total_pods,
+            "total_services": total_services,
+            "total_deployments": total_deployments,
+            "total_configmaps": total_configmaps,
+        });
+
+        if secrets_collected {
+            cluster_summary["total_secrets"] = serde_json::json!(total_secrets);
+            cluster_summary["total_resources"] = serde_json::json!(
+                total_pods + total_services + total_deployments + total_configmaps + total_secrets
+            );
+        } else {
+            cluster_summary["secrets_collected"] = serde_json::json!(false);
+            cluster_summary["total_resources"] = serde_json::json!(
+                total_pods + total_services + total_deployments + total_configmaps
             );
         }
 
@@ -333,15 +362,7 @@ impl OutputManager {
                 "tool": "ketchup",
                 "version": env!("CARGO_PKG_VERSION")
             },
-            "cluster_summary": {
-                "total_namespaces": namespace_stats.len(),
-                "total_pods": total_pods,
-                "total_services": total_services,
-                "total_deployments": total_deployments,
-                "total_configmaps": total_configmaps,
-                "total_secrets": total_secrets,
-                "total_resources": total_pods + total_services + total_deployments + total_configmaps + total_secrets
-            },
+            "cluster_summary": cluster_summary,
             "namespace_details": namespace_details
         });
 
