@@ -1,3 +1,7 @@
+# Dockerfile for ketchup - Kubernetes Config Collector
+# Optimized version with dependency caching
+# Using SUSE BCI Rust stable image (1.90)
+
 # Build stage
 FROM registry.suse.com/bci/rust:1.90 as builder
 
@@ -25,7 +29,7 @@ RUN cargo build --release
 FROM registry.suse.com/bci/bci-micro:latest
 
 # Copy CA certificates for HTTPS connections to Kubernetes API
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /etc/ssl/certs /etc/ssl/certs
 
 # Copy the binary from builder
 COPY --from=builder /build/target/release/ketchup /usr/local/bin/ketchup
