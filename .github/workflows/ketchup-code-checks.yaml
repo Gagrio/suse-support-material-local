@@ -5,10 +5,12 @@ on:
     branches: [ master ]
     paths:
       - 'ketchup/**'
+      - '.github/workflows/ketchup-code-checks.yaml'
   pull_request:
     branches: [ master ]
     paths:
       - 'ketchup/**'
+      - '.github/workflows/ketchup-code-checks.yaml'
   workflow_dispatch:  # Allows manual triggering
 
 jobs:

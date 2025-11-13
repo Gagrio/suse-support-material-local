@@ -6,6 +6,10 @@ on:
     types:
       - completed
     branches: [ master ]
+  push:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/docker-build-ketchup.yaml'
   workflow_dispatch:  # Allows manual triggering
 
 jobs:
