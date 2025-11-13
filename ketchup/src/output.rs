@@ -179,25 +179,25 @@ impl OutputManager {
         // Build collection options summary
         let mut collection_flags = Vec::new();
         if opts.include_secrets {
-            collection_flags.push("secrets");
+            collection_flags.push("secrets".to_string());
         }
         if opts.include_custom_resources {
-            collection_flags.push("custom_resources");
+            collection_flags.push("custom_resources".to_string());
         }
         if let Some(ref crds) = opts.specific_crds {
-            collection_flags.push(&format!("specific_crds: {:?}", crds));
+            collection_flags.push(format!("specific_crds: {:?}", crds));
         }
         if opts.include_events {
-            collection_flags.push("events");
+            collection_flags.push("events".to_string());
         }
         if opts.include_replicasets {
-            collection_flags.push("replicasets");
+            collection_flags.push("replicasets".to_string());
         }
         if opts.include_endpoints {
-            collection_flags.push("endpoints");
+            collection_flags.push("endpoints".to_string());
         }
         if opts.include_leases {
-            collection_flags.push("leases");
+            collection_flags.push("leases".to_string());
         }
 
         let summary = serde_json::json!({
