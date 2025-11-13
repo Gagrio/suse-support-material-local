@@ -9,6 +9,7 @@ on:
     branches: [ master ]
     paths:
       - 'ketchup/**'
+  workflow_dispatch:  # Allows manual triggering
 
 jobs:
   code-quality:
