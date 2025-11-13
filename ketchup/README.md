@@ -20,11 +20,62 @@ A blazingly fast 🦀 Rust-powered tool that collects and archives **all** Kuber
 
 ### Prerequisites
 
-- 🦀 **Rust 1.70+** (install via [rustup](https://rustup.rs/))
 - ☸️ **Kubernetes cluster** with accessible kubeconfig
+- 🐳 **Podman or Docker** installed
 - 📁 **Write access** to output directory
 
-### Installation
+### Quick Start with Container
+
+The easiest way to use Ketchup is with the pre-built container image:
+
+```bash
+# Basic collection from all namespaces
+podman run -v ~/.kube/config:/kubeconfig:ro,Z \
+           -v /tmp:/tmp:Z \
+           ghcr.io/gagrio/ketchup:latest \
+           --kubeconfig /kubeconfig --output /tmp --verbose
+
+# Collect with secrets and custom resources
+podman run -v ~/.kube/config:/kubeconfig:ro,Z \
+           -v /tmp:/tmp:Z \
+           ghcr.io/gagrio/ketchup:latest \
+           --kubeconfig /kubeconfig --output /tmp -s -C --verbose
+
+# Collect from specific namespaces only
+podman run -v ~/.kube/config:/kubeconfig:ro,Z \
+           -v /tmp:/tmp:Z \
+           ghcr.io/gagrio/ketchup:latest \
+           --kubeconfig /kubeconfig --output /tmp -n "kube-system,default" --verbose
+```
+
+**Note:** The `:Z` flag is required for SELinux systems (RHEL, CentOS, Fedora, SUSE). On non-SELinux systems, it's safely ignored.
+
+### 🐳 Building Custom Container Image
+
+If you need to build your own container image, a multi-stage Dockerfile using SUSE BCI images is included in the repository.
+
+```bash
+# Build the container image
+podman build -t ketchup:custom .
+
+# Run your custom image
+podman run -v ~/.kube/config:/kubeconfig:ro,Z \
+           -v /tmp:/tmp:Z \
+           ketchup:custom \
+           --kubeconfig /kubeconfig --output /tmp --verbose
+```
+
+**Notes:**
+- The official image is available at `ghcr.io/gagrio/ketchup:latest`
+- Custom builds are useful for testing unreleased features or modifications
+- If your kubeconfig points to `localhost` or `127.0.0.1`, add `--net=host` to the run command
+
+### Installation from Source
+
+If you want to build from source instead of using the container image:
+
+**Prerequisites:**
+- 🦀 **Rust 1.70+** (install via [rustup](https://rustup.rs/))
 
 ```bash
 # Clone the repository
@@ -218,31 +269,6 @@ By default, Ketchup **sanitizes** all resources to make them ready for `kubectl 
 
 **To collect raw unsanitized resources:** Use the `--raw` or `-r` flag.
 
-## 🐳 Containerization
-
-A multi-stage Dockerfile using SUSE BCI images is included in the repository.
-
-### Running with Podman
-
-```bash
-# Basic collection
-podman run -v ~/.kube/config:/kubeconfig:ro,Z \
-           -v /tmp:/tmp:Z \
-           ghcr.io/gagrio/ketchup:latest \
-           --kubeconfig /kubeconfig --output /tmp --verbose
-
-# Include secrets and custom resources
-podman run -v ~/.kube/config:/kubeconfig:ro,Z \
-           -v /tmp:/tmp:Z \
-           ghcr.io/gagrio/ketchup:latest \
-           --kubeconfig /kubeconfig --output /tmp -s -C --verbose
-```
-
-**Notes:**
-- The `:Z` flag is needed for SELinux systems (RHEL, CentOS, Fedora, SUSE) to properly relabel volumes
-- On non-SELinux systems, `:Z` is safely ignored
-- If your kubeconfig points to `localhost` or `127.0.0.1`, add `--net=host`
-
 ## 💡 Common Use Cases
 
 ### Support Engineers: Complete Cluster State
@@ -331,6 +357,8 @@ src/
 - To skip custom resources entirely, don't use `-C` flag
 
 ## 📄 License
+
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
 This project is part of the SUSE Support Material collection.
 

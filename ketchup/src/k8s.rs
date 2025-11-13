@@ -3,7 +3,7 @@ use k8s_openapi::api::core::v1::Namespace;
 use kube::{
     api::{Api, DynamicObject, ListParams},
     discovery::{self, Scope},
-    Client, Config, ResourceExt,
+    Client, Config,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -182,9 +182,9 @@ impl KubeClient {
         opts: &CollectionOptions,
     ) -> Result<Vec<Value>> {
         let api: Api<DynamicObject> = if let Some(ns) = namespace {
-            Api::namespaced_with(self.client.clone(), ns, &ar.api_version, &ar.kind)
+            Api::namespaced_with(self.client.clone(), ns, ar)
         } else {
-            Api::all_with(self.client.clone(), &ar.api_version, &ar.kind)
+            Api::all_with(self.client.clone(), ar)
         };
 
         let list = api.list(&ListParams::default()).await?;
