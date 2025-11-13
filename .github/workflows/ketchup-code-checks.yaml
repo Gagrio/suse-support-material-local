@@ -13,7 +13,6 @@ on:
 jobs:
   code-quality:
     name: Check code quality
-    name: Check code quality
     runs-on: ubuntu-latest
 
     steps:
