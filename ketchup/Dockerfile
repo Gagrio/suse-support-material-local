@@ -4,7 +4,7 @@ FROM registry.suse.com/bci/rust:1.90 as builder
 WORKDIR /build
 
 # Copy manifests first for better layer caching
-COPY ketchup/Cargo.toml ketchup/Cargo.lock ./
+COPY Cargo.toml Cargo.lock ./
 
 # Create a dummy main to cache dependencies
 RUN mkdir src && \
@@ -13,7 +13,7 @@ RUN mkdir src && \
     rm -rf src
 
 # Now copy the real source code
-COPY ketchup/src ./src
+COPY src ./src
 
 # Touch main.rs to force rebuild of the app only
 RUN touch src/main.rs
